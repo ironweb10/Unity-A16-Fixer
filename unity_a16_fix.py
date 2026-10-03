@@ -326,6 +326,60 @@ def patch_jnibridge(root):
     return changed
 
 
+GMS_MARK = b"A fatal developer error has occurred"
+GMS_RE = re.compile(
+    r"(const/16 (v\d+), )0xa((?:[ \t]*\n[ \t]*\.line \d+)?[ \t]*\n\s*if-eq (\w+), \2, (:cond_\w+))")
+
+
+def patch_gms(root):
+    changed = found = False
+    for d in sorted(root.glob("smali*")):
+        if not d.is_dir():
+            continue
+        for f in d.rglob("*.smali"):
+            try:
+                raw = f.read_bytes()
+            except OSError:
+                continue
+            if GMS_MARK not in raw:
+                continue
+            s = raw.decode("utf-8", "replace")
+            rel = f.relative_to(root)
+            found = True
+            if "unityfix_gms" in s:
+                log(f"[gms] {rel}: already patched")
+                continue
+            new_s, n = None, 0
+            for m in GMS_RE.finditer(s):
+                label = m.group(5)
+                pos = s.find("\n    " + label + "\n", m.end())
+                if pos != -1 and "Ljava/lang/IllegalStateException;" in s[pos:pos + 600]:
+                    new_s = s[:m.start()] + m.group(1) + "-0x1" + m.group(3) + s[m.end():]
+                    n = 1
+                    break
+            how = "status 10 (DEVELOPER_ERROR) no longer throws"
+            if new_s is None:
+                i = s.find(GMS_MARK.decode())
+                mstart = s.rfind("\n.method ", 0, i)
+                mend = s.find("\n.end method", i)
+                sig = s[mstart:s.find("\n", mstart + 1)] if mstart != -1 else ""
+                t = re.search(r"\n[ \t]*throw \w+", s[i:mend]) if mend != -1 else None
+                if sig.rstrip().endswith(")V") and t:
+                    a, b = i + t.start(), i + t.end()
+                    new_s = s[:a] + "\n    return-void" + s[b:]
+                    how = "fatal 'throw' replaced by return-void"
+                    n = 1
+            if new_s is None:
+                log(f"[gms] {rel}: pattern not recognised (skipped)")
+                continue
+            write_text(f, new_s.rstrip("\n") + "\n\n# unityfix_gms\n")
+            log(f"[gms] {rel}: {how}")
+            changed = True
+    if not found:
+        log("[gms] no legacy Google Play services client found (skipped)")
+    return changed
+
+
 def need_java():
     if not shutil.which("java"):
         sys.exit("ERROR: Java was not found. Install a JRE/JDK (version 11 or newer) and run again.")
@@ -469,6 +523,8 @@ def apply_patches(root, a):
         patch_libunity(root)
     if not a.skip_jni:
         patch_jnibridge(root)
+    if not a.skip_gms:
+        patch_gms(root)
 
 
 def pick_apk_interactively():
@@ -557,6 +613,7 @@ def main():
     ap.add_argument("--skip-manifest", action="store_true")
     ap.add_argument("--skip-lib", action="store_true")
     ap.add_argument("--skip-jni", action="store_true")
+    ap.add_argument("--skip-gms", action="store_true")
     a = ap.parse_args()
     DRY = a.dry_run
     interactive = a.input is None
