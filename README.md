@@ -52,7 +52,7 @@ This script doesn't just guess offsets; it uses advanced pattern matching to app
 2. **Unity Allocator Crash:** Fixes the dreaded SIGSEGV/SIGABRT crash (`"Using memoryadresses from more that 16GB of memory"`). Older `libunity.so` files only have limited 4GB address slots. This script patches the native ARM64 assembly to force extra regions to share slot 0.
 3. **Android 16 NoSuchMethodError:** Modern Android versions introduce new default interface methods (like `ServiceConnection.onServiceConnected` with 3 arguments). Older Unity JNI bridges don't know how to handle this and crash. This script injects custom Smali code to catch and safely handle these exceptions.
 4. **ABI Architecture Check:** Automatically detects if the game lacks `arm64-v8a` libraries. If it's a 32-bit only game, the script will warn you, as modern 64-bit-only phones physically cannot run it, regardless of patches.
-
+5. **Google Play Services Crash:** Fixes the IllegalStateException: A fatal developer error has occurred crash caused by older Google Play Games / Google Mobile Services clients. When a re-signed APK causes Google Play Services to return DEVELOPER_ERROR (status 10), the legacy library may throw the exception on the main thread and terminate the game. This patch intercepts the failed sign-in/developer-error path so it is handled as a normal authentication failure instead of an uncaught exception and crash.
 ---
 
 ## 🤝 Contributing & Anti-Plagiarism Policy
