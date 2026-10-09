@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+
 import argparse, json, os, re, shutil, struct, subprocess, sys, tempfile, zipfile
 import urllib.request
 from pathlib import Path
@@ -25,10 +26,11 @@ def write_text(path, text):
         Path(path).write_text(text, encoding="utf-8")
 
 
-MANIFEST_ATTRS = [("allowNativeHeapPointerTagging", "false"), ("memtagMode", "off")]
+MANIFEST_ATTRS = [("allowNativeHeapPointerTagging", "false"), ("memtagMode", "off"),
+                  ("gwpAsanMode", "never")]
 
 
-def patch_manifest(root):
+def patch_manifest(root, debuggable=False):
     mf = root / "AndroidManifest.xml"
     if not mf.exists():
         log("[manifest] AndroidManifest.xml not found (skipped)")
@@ -37,15 +39,29 @@ def patch_manifest(root):
     if "<application" not in s:
         log("[manifest] manifest is not decoded text (skipped)")
         return False
+    changed = False
     add = [(k, v) for k, v in MANIFEST_ATTRS if f"android:{k}=" not in s]
-    if not add:
-        log("[manifest] already patched")
-        return False
-    attrs = " ".join(f'android:{k}="{v}"' for k, v in add)
-    s2 = re.sub(r"<application\b", "<application " + attrs, s, count=1)
-    write_text(mf, s2)
-    log(f"[manifest] added to <application>: {attrs}")
-    return True
+    if add:
+        attrs = " ".join(f'android:{k}="{v}"' for k, v in add)
+        s = re.sub(r"<application\b", "<application " + attrs, s, count=1)
+        log(f"[manifest] added to <application>: {attrs}")
+        changed = True
+    else:
+        log("[manifest] MTE opt-out already patched")
+    if debuggable:
+        if re.search(r'android:debuggable="true"', s):
+            log("[manifest] already debuggable")
+        elif re.search(r'android:debuggable="false"', s):
+            s = s.replace('android:debuggable="false"', 'android:debuggable="true"', 1)
+            log('[manifest] android:debuggable false -> true')
+            changed = True
+        else:
+            s = re.sub(r"<application\b", '<application android:debuggable="true"', s, count=1)
+            log('[manifest] added android:debuggable="true" (diagnostic build)')
+            changed = True
+    if changed:
+        write_text(mf, s)
+    return changed
 
 
 def _sext(v, bits):
@@ -107,7 +123,7 @@ def find_region_patches(data):
                     X = j + _sext((w[j] >> 5) & 0x7ffff, 19)
             if X is None or not has_lsr or not (0 <= X < n):
                 continue
-            if (w[X] & 0xffffffe0) != 0x2a1f03e0:
+            if (w[X] & 0xffffffe0) != 0x2a1f03e0: 
                 continue
             if (w[i + 6] & 0xfffffc1f) != 0x3100041f:
                 continue
@@ -518,7 +534,7 @@ def abi_check(apk):
 
 def apply_patches(root, a):
     if not a.skip_manifest:
-        patch_manifest(root)
+        patch_manifest(root, getattr(a, "debuggable", False))
     if not a.skip_lib:
         patch_libunity(root)
     if not a.skip_jni:
@@ -574,7 +590,7 @@ def process_apk(apk, a):
     if a.out:
         out = Path(a.out)
     else:
-        suffix = "_unsigned.apk" if a.no_sign else "_fixed.apk"
+        suffix = "_unsigned.apk" if a.no_sign else ("_debug.apk" if a.debuggable else "_fixed.apk")
         out = apk.with_name(apk.stem + suffix)
     with tempfile.TemporaryDirectory() as tmp:
         work, built = Path(tmp) / "dec", Path(tmp) / "built.apk"
@@ -614,6 +630,8 @@ def main():
     ap.add_argument("--skip-lib", action="store_true")
     ap.add_argument("--skip-jni", action="store_true")
     ap.add_argument("--skip-gms", action="store_true")
+    ap.add_argument("--debuggable", action="store_true",
+                    help="diagnostic build: android:debuggable=true so 'run-as' can read the app's data")
     a = ap.parse_args()
     DRY = a.dry_run
     interactive = a.input is None
